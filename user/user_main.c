@@ -142,11 +142,12 @@ void ICACHE_FLASH_ATTR mac_2_buff(char *buf, uint8_t mac[6]) {
 #define MQTT_TOPIC_NOSTATIONS	0x2000
 #define MQTT_TOPIC_GPIOIN	0x4000
 #define MQTT_TOPIC_GPIOOUT	0x8000
+#define MQTT_TOPIC_ALARM	0x10000
 
 MQTT_Client mqttClient;
 bool mqtt_enabled, mqtt_connected;
 
-void ICACHE_FLASH_ATTR mqtt_publish_str(uint16_t mask, uint8_t *sub_topic, uint8_t *str)
+void ICACHE_FLASH_ATTR mqtt_publish_str(uint32_t mask, uint8_t *sub_topic, uint8_t *str)
 {
 uint8_t buf[256];
   if (!mqtt_enabled || (config.mqtt_topic_mask & mask) == 0) return;
@@ -156,7 +157,7 @@ uint8_t buf[256];
   MQTT_Publish(&mqttClient, buf, str, os_strlen(str), 0, 0);
 }
 
-void ICACHE_FLASH_ATTR mqtt_publish_int(uint16_t mask, uint8_t *sub_topic, uint8_t *format, uint32_t val)
+void ICACHE_FLASH_ATTR mqtt_publish_int(uint32_t mask, uint8_t *sub_topic, uint8_t *format, uint32_t val)
 {
 uint8_t buf[32];
   if (!mqtt_enabled || (config.mqtt_topic_mask & mask) == 0) return;
@@ -827,6 +828,15 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	char c = '\n';
 	ringbuf_memcpy_into(console_tx_buffer, &c, 1);
 	goto command_handled_2;
+    }
+
+    if (strcmp(tokens[0], "alarm") == 0)
+    {
+    	currentconn = pespconn;
+    	os_sprintf (response,"\n received ALARM %s\n", tokens[1]);
+    	to_console(response);
+    	mqtt_publish_str(MQTT_TOPIC_ALARM, "ALARM", tokens[1]);
+    	goto command_handled_2;
     }
 
     if (strcmp(tokens[0], "help") == 0)
@@ -2322,6 +2332,8 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 #endif
         }
     }
+
+
 
     /* Control comes here only if the tokens[0] command is not handled */
     os_sprintf_flash(response, "\r\nInvalid Command\r\n");
