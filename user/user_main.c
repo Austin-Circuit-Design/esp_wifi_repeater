@@ -50,6 +50,21 @@
 #include "mqtt.h"
 #endif
 
+/*
+ * 433MHz RX support declarations
+ */
+#define DEBUG_ALARM	0
+#define MAX_PULSES	100
+#define MAX_WIDTH	20000
+uint64 current_time = 0;
+uint64 previous_time = 0;
+uint64 pulseWidth = 0;
+uint64 pulseTime [MAX_PULSES];
+bool alarmPending = 0;
+uint8 alarmID [20]= "ALARM TagID = ";
+
+
+
 #define os_sprintf_flash(str, fmt, ...) do {	\
 	static const char flash_str[] ICACHE_RODATA_ATTR STORE_ATTR = fmt;	\
 	int flen = (sizeof(flash_str) + 4) & ~3;	\
@@ -2870,7 +2885,8 @@ static void ICACHE_FLASH_ATTR user_procTask(os_event_t *events)
 #ifdef USER_GPIO_IN
     case SIG_GPIO_INT:
         {
-	    mqtt_publish_int(MQTT_TOPIC_GPIOIN, "GpioIn", "%d", (uint32_t)events->par);
+        	mqtt_publish_str(MQTT_TOPIC_RESPONSE, "response", alarmID);
+        	//mqtt_publish_int(MQTT_TOPIC_GPIOIN, "GpioIn", "%d", (uint32_t)events->par);
             //os_printf("GPIO %d %d\r\n", (uint32_t)events->par, easygpio_inputGet(USER_GPIO_IN));
         }
         break;
@@ -3153,29 +3169,135 @@ void ICACHE_FLASH_ATTR int_timer_func(void *arg){
         gpio_pin_intr_state_set(GPIO_ID_PIN(USER_GPIO_IN), GPIO_PIN_INTR_ANYEDGE);
 }
 
+uint8 crc(uint8 *buffer, uint8 bufferSize) {
+
+    unsigned char i = 0;
+    unsigned short j = 0;
+    unsigned char key = 0x18;
+    unsigned char bit;
+    volatile unsigned char result = 0; // data in R13 initially set to 0
+
+    for (j = bufferSize; j >0; j--) // byte counter
+    {
+        for (i = 0; i < 8; i++)
+        {
+            bit = 1<<i;
+            if (bit & buffer[j-1])
+            {
+                if(result & 0x01)
+                    result = result >>1;
+                else
+                {
+                    result = result ^ key;
+                    result = (result >>1);
+                    result+= 0x80;
+                }
+            }
+            else
+            {
+                if(result & 0x01)
+                {
+                    result = result ^ key;
+                    result = (result >>1);
+                    result+= 0x80;
+                }
+                else
+                    result = result >>1;
+            }
+        }
+    }
+    return result;
+}
+
 // Interrupt handler - this function will be executed on any edge of USER_GPIO_IN
 LOCAL void  gpio_intr_handler(void *dummy)
 {
-    uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+	// clear gpio status. Say ESP8266EX SDK Programming Guide in  5.1.6. GPIO interrupt handler
+	    static uint32 pulseCount,i;
+	    static uint8 tagId[5];
+	    static uint8 byteIndex;
+	    static uint8 bitIndex;
+	    uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+	    uint8 crcCalculated;
 
-    if (gpio_status & BIT(USER_GPIO_IN)) {
+	// if the interrupt was by GPIO2
+	    if (gpio_status & BIT(2))
+	    {
+	// disable interrupt for GPIO2
+	        gpio_pin_intr_state_set(GPIO_ID_PIN(2), GPIO_PIN_INTR_DISABLE);
 
-        // Disable interrupt for GPIO
-        gpio_pin_intr_state_set(GPIO_ID_PIN(USER_GPIO_IN), GPIO_PIN_INTR_DISABLE);
 
-        // Post it to the main task
-	//system_os_post(0, SIG_GPIO_INT, (ETSParam) easygpio_inputGet(USER_GPIO_IN));
+	//Calculate pulse width
+			current_time = get_long_systime();	//system_get_time();
+			pulseWidth = current_time - previous_time;
+			previous_time=current_time;
+			pulseTime[pulseCount]=pulseWidth;
+			pulseCount++;
+			if (pulseWidth > MAX_WIDTH || pulseCount > MAX_PULSES)
+			{
+#if DEBUG_ALARM
+				//Here we want to print the array
+				for (i=0;i<pulseCount;i++)
+					os_printf("pulse %d =  %d\r\n", i,pulseTime[i]);
+#endif
+				pulseCount= 0;
+				byteIndex = 0;
+				bitIndex = 0;
+				for (i=0;i<5;i++)
+					tagId[i]=0;
+			}
+			if (pulseCount == 48)
+			{
+				for (bitIndex=0;bitIndex<8;bitIndex++)
+				{
+					if (pulseTime[bitIndex] > 370 && pulseTime[bitIndex] < 800)
+						tagId[0] += 1<< (7 - bitIndex) ;
+				}
+				for (bitIndex=10;bitIndex<18;bitIndex++)
+				{
+					if (pulseTime[bitIndex] > 370 && pulseTime[bitIndex] < 800)
+						tagId[1] += 1<< (17 -bitIndex) ;
+				}
+				for (bitIndex=20;bitIndex<28;bitIndex++)
+				{
+					if (pulseTime[bitIndex] > 370 && pulseTime[bitIndex] < 800)
+						tagId[2] += 1<< (27 - bitIndex) ;
+				}
+				for (bitIndex=30;bitIndex<38;bitIndex++)
+				{
+					if (pulseTime[bitIndex] > 370 && pulseTime[bitIndex] < 800)
+						tagId[3] += 1<< (37 - bitIndex) ;
+				}
+				for (bitIndex=40;bitIndex<48;bitIndex++)
+				{
+					if (pulseTime[bitIndex] > 370 && pulseTime[bitIndex] < 800)
+						tagId[4] += 1<< (47 - bitIndex) ;
+				}
+				crcCalculated = crc (tagId,3);
+				if (tagId[3] == (0xFF - crcCalculated))
+				{
+			        // Post it to the main task
+					system_os_post(0, SIG_GPIO_INT, (ETSParam) easygpio_inputGet(USER_GPIO_IN));
+					os_printf("################################# ALARM #################################\r\n");
+					if (!alarmPending)
+					{
+						alarmPending=1;
+					    os_sprintf(alarmID, "ALARM TAG ID %02x:%02x:%02x",
+					    		tagId[0], tagId[1], tagId[2]);
 
-        // Clear interrupt status for GPIO
-        GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(USER_GPIO_IN));
+					}
+				}
+#if DEBUG_ALARM
+				os_printf ("TAG ID = %x %x %x    TAG CRC = %x  Calculated CRC %xTag ID[0] %x \r\n ",tagId[0],tagId[1],tagId[2],tagId[3],crcCalculated,tagId[4]);
+#endif
+			}
 
-	// Start the timer
-    	os_timer_setfn(&inttimer, int_timer_func, easygpio_inputGet(USER_GPIO_IN));
-    	os_timer_arm(&inttimer, 50, 0); 
+	//clear interrupt status for GPIO2
+	        GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(2));
 
-        // Reactivate interrupts foR GPIO
-        //gpio_pin_intr_state_set(GPIO_ID_PIN(USER_GPIO_IN), GPIO_PIN_INTR_ANYEDGE);
-    }
+	// Reactivate interrupts for GPIO2
+	        gpio_pin_intr_state_set(GPIO_ID_PIN(2), GPIO_PIN_INTR_ANYEDGE);
+	    }
 }
 #endif /* USER_GPIO_IN */
 #endif /* MQTT_CLIENT */
@@ -3310,6 +3432,66 @@ int ICACHE_FLASH_ATTR get_AAAA_Record(uint8_t addr[16], const char domain_name[]
 }
 #endif
 
+#if 0
+
+//-------------------------------------------------------------------------------------------------
+// interrupt handler
+// this function will be executed on any edge of GPIO2
+LOCAL void  gpio_intr_handler(int *dummy)
+{
+// clear gpio status. Say ESP8266EX SDK Programming Guide in  5.1.6. GPIO interrupt handler
+    static uint32 pulseCount;
+    uint32 gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+
+// if the interrupt was by GPIO2
+    if (gpio_status & BIT(2))
+    {
+// disable interrupt for GPIO2
+        gpio_pin_intr_state_set(GPIO_ID_PIN(2), GPIO_PIN_INTR_DISABLE);
+
+
+//Calculate pulse width
+		current_time = system_get_time();
+		pulseWidth = current_time - previous_time;
+		previous_time=current_time;
+		if (pulseWidth > MAX_WIDTH)
+		{
+			//Here we want to print the array
+			pulseCount= 0;
+		}
+		else
+		{
+			pulseTime[pulseCount]=pulseWidth;
+		}
+		// increment nPulses indirectly
+        pulseCount++;
+		if (pulseCount > MAX_PULSES )
+		{
+			//Here we want to print the array
+			pulseCount = 0;
+		}
+
+//clear interrupt status for GPIO2
+        GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status & BIT(2));
+
+// Reactivate interrupts for GPIO2
+        gpio_pin_intr_state_set(GPIO_ID_PIN(2), GPIO_PIN_INTR_ANYEDGE);
+    }
+}
+
+
+void ICACHE_FLASH_ATTR gpio_init(void)
+{
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U,FUNC_GPIO2);                //GPIO Alternate Function
+    GPIO_DIS_OUTPUT(GPIO_ID_PIN(2));                                  //Configure it in input mode.
+    ETS_GPIO_INTR_DISABLE();                                           //Close the GPIO interrupt
+    //ETS_GPIO_INTR_ATTACH(GPIO_INTERRUPT,NULL);                         //Register the interrupt function
+    easygpio_attachInterrupt(GPIO_ID_PIN(2), EASYGPIO_PULLUP, gpio_intr_handler, NULL);
+    gpio_pin_intr_state_set(GPIO_ID_PIN(2),GPIO_PIN_INTR_NEGEDGE);    //Falling edge trigger
+    ETS_GPIO_INTR_ENABLE() ;                                           //Enable the GPIO interrupt
+}
+
+#endif
 void ICACHE_FLASH_ATTR user_init()
 {
 struct ip_info info;

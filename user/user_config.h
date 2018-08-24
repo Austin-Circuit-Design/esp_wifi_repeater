@@ -24,7 +24,7 @@
 //
 // Define this if you have a status LED connected to a GPIO pin
 //
-#define STATUS_LED_GIPO	2
+#define STATUS_LED_GIPO	12
 
 //
 // Defines the default GPIO pin for HW factory reset (when this GPIO is pulled low for more than 3 secs)
@@ -120,7 +120,7 @@
 //
 // Define this if you want to have it work as a MQTT client
 #define MQTT_CLIENT 	1	
-
+#define USER_GPIO_IN  	2
 #define MQTT_BUF_SIZE   1024
 #define MQTT_KEEPALIVE    120  /*seconds*/
 #define MQTT_RECONNECT_TIMEOUT  5 /*seconds*/
@@ -135,7 +135,7 @@
 //#define USER_GPIO_IN   0
 
 // Define this if you want to set an output signal
-//#define USER_GPIO_OUT  12
+#define USER_GPIO_OUT  13
 
 // Define this to support WPA2 PEAP authentication (experimental)
 //
